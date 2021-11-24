@@ -72,6 +72,9 @@ struct libcrun_container_s
   gid_t container_gid;
 
   bool use_intermediate_userns;
+  // TODO hack creates a pointer to custom handler config where to store the SEV config for libkrun
+  char *attestation_url;
+  char *image;
 
   void *private_data;
   void (*cleanup_private_data) (void *private_data);

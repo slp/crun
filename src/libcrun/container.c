@@ -1072,19 +1072,25 @@ libkrun_do_exec (void *container, void *arg, const char *pathname, char *const a
   int32_t (*krun_set_root) (uint32_t ctx_id, const char *root_path);
   int32_t (*krun_set_workdir) (uint32_t ctx_id, const char *workdir_path);
   int32_t (*krun_set_exec) (uint32_t ctx_id, const char *exec_path, char *const argv[], char *const envp[]);
+  int32_t (* krun_set_attestation) (uint32_t ctx_id, const char *url, const char *image);
   void *handle = arg;
   uint32_t num_vcpus, ram_mib;
   int32_t ctx_id, ret;
   cpu_set_t set;
 
+  char *attestation_url = ((libcrun_container_t *) container)->attestation_url;
+  char *image = ((libcrun_container_t *) container)->image;
   krun_create_ctx = dlsym (handle, "krun_create_ctx");
   krun_start_enter = dlsym (handle, "krun_start_enter");
   krun_set_vm_config = dlsym (handle, "krun_set_vm_config");
-  krun_set_root = dlsym (handle, "krun_set_root");
+  krun_set_root = dlsym (handle, "krun_set_root_disk");
   krun_set_workdir = dlsym (handle, "krun_set_workdir");
   krun_set_exec = dlsym (handle, "krun_set_exec");
+  krun_set_attestation = dlsym (handle, "krun_set_attestation_url");
+  krun_start_enter = dlsym (handle, "krun_start_enter");
+
   if (krun_create_ctx == NULL || krun_start_enter == NULL || krun_set_vm_config == NULL || krun_set_root == NULL
-      || krun_set_exec == NULL)
+      || krun_set_exec == NULL || krun_set_attestation == NULL || krun_start_enter == NULL)
     {
       fprintf (stderr, "could not find symbol in `libkrun.so`");
       dlclose (handle);
@@ -1112,7 +1118,7 @@ libkrun_do_exec (void *container, void *arg, const char *pathname, char *const a
   if (UNLIKELY (ret < 0))
     error (EXIT_FAILURE, -ret, "could not set krun vm configuration");
 
-  ret = krun_set_root (ctx_id, "/");
+  ret = krun_set_root (ctx_id, "/disk.img");
   if (UNLIKELY (ret < 0))
     error (EXIT_FAILURE, -ret, "could not set krun root");
 
@@ -1122,17 +1128,21 @@ libkrun_do_exec (void *container, void *arg, const char *pathname, char *const a
       if (UNLIKELY (ret < 0))
         error (EXIT_FAILURE, -ret, "could not set krun working directory");
     }
-
-  ret = krun_set_exec (ctx_id, pathname, &argv[1], NULL);
+ 
+  ret = krun_set_attestation (ctx_id, attestation_url, image);
   if (UNLIKELY (ret < 0))
-    error (EXIT_FAILURE, -ret, "could not set krun executable");
+    error (EXIT_FAILURE, -ret, "could not configure the attestation");
+
+  ret = krun_start_enter (ctx_id);
+  if (UNLIKELY (ret < 0))
+    error (EXIT_FAILURE, -ret, "could not start the VM");
 
   return krun_start_enter (ctx_id);
 }
 #endif
 
 static int
-libcrun_configure_libkrun (struct container_entrypoint_s *args, libcrun_error_t *err)
+libcrun_configure_libkrun (struct container_entrypoint_s *args, libcrun_error_t *err,const char *attestation_url,const char *image_name)
 {
 #if HAVE_DLOPEN && HAVE_LIBKRUN
   void *handle;
@@ -1205,9 +1215,15 @@ libcrun_configure_handler (struct container_entrypoint_s *args, libcrun_error_t 
     /* In selection order global_handler takes more priority over handler configured via spec annotations. */
     /* Check if crun is being invoked as krun via global_handler. */
 #if HAVE_DLOPEN && HAVE_LIBKRUN
+  const char *image_name;
+  const char *attestation_url;
+  image_name = find_annotation (args->container, "krun/image");
+  attestation_url = find_annotation (args->container, "krun/attestation");
   if (args->context->handler != NULL && (strcmp (args->context->handler, "krun") == 0))
     {
-      return libcrun_configure_libkrun (args, err);
+      args->container-> attestation_url = attestation_url;
+      args->container-> image = image_name;
+      return libcrun_configure_libkrun (args, err, attestation_url, image_name);
     }
 #endif
 
@@ -1228,9 +1244,11 @@ libcrun_configure_handler (struct container_entrypoint_s *args, libcrun_error_t 
 
   if (strcmp (annotation, "krun") == 0)
     {
+      args->container-> attestation_url = attestation_url;
+      args->container-> image = image_name;
       /* set global_handler equivalent to "krun" so that we can mount kvm device */
       args->context->handler = annotation;
-      return libcrun_configure_libkrun (args, err);
+      return libcrun_configure_libkrun (args, err, attestation_url, image_name);
     }
 
   if (strcmp (annotation, "wasm") == 0)
