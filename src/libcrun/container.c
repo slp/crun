@@ -1073,12 +1073,13 @@ libkrun_do_exec (void *container, void *arg, const char *pathname, char *const a
   int32_t (*krun_set_workdir) (uint32_t ctx_id, const char *workdir_path);
   int32_t (*krun_set_exec) (uint32_t ctx_id, const char *exec_path, char *const argv[], char *const envp[]);
   int32_t (* krun_set_attestation) (uint32_t ctx_id, const char *url, const char *image);
+
   void *handle = arg;
   uint32_t num_vcpus, ram_mib;
   int32_t ctx_id, ret;
   cpu_set_t set;
 
-  char *attestation_url = ((libcrun_container_t *) container)->attestation_url;
+  //char *attestation_url = ((libcrun_container_t *) container)->attestation_url;
   char *image = ((libcrun_container_t *) container)->image;
   krun_create_ctx = dlsym (handle, "krun_create_ctx");
   krun_start_enter = dlsym (handle, "krun_start_enter");
@@ -1096,19 +1097,20 @@ libkrun_do_exec (void *container, void *arg, const char *pathname, char *const a
       dlclose (handle);
       return -1;
     }
+  libcrun_error_t *err;
 
   /* If sched_getaffinity fails, default to 1 vcpu.  */
   num_vcpus = 1;
   /* If no memory limit is specified, default to 2G.  */
   ram_mib = 2 * 1024;
 
-  if (def && def->linux && def->linux->resources && def->linux->resources->memory
-      && def->linux->resources->memory->limit_present)
-    ram_mib = def->linux->resources->memory->limit / (1024 * 1024);
+//  if (def && def->linux && def->linux->resources && def->linux->resources->memory
+//      && def->linux->resources->memory->limit_present)
+//    ram_mib = def->linux->resources->memory->limit / (1024 * 1024);
 
-  CPU_ZERO (&set);
-  if (sched_getaffinity (getpid (), sizeof (set), &set) == 0)
-    num_vcpus = CPU_COUNT (&set);
+//  CPU_ZERO (&set);
+//  if (sched_getaffinity (getpid (), sizeof (set), &set) == 0)
+//    num_vcpus = CPU_COUNT (&set);
 
   ctx_id = krun_create_ctx ();
   if (UNLIKELY (ctx_id < 0))
@@ -1129,7 +1131,7 @@ libkrun_do_exec (void *container, void *arg, const char *pathname, char *const a
         error (EXIT_FAILURE, -ret, "could not set krun working directory");
     }
  
-  ret = krun_set_attestation (ctx_id, attestation_url, image);
+  ret = krun_set_attestation (ctx_id, "http://172.30.115.41:8081/untrusted", image);
   if (UNLIKELY (ret < 0))
     error (EXIT_FAILURE, -ret, "could not configure the attestation");
 
@@ -1137,12 +1139,14 @@ libkrun_do_exec (void *container, void *arg, const char *pathname, char *const a
   if (UNLIKELY (ret < 0))
     error (EXIT_FAILURE, -ret, "could not start the VM");
 
+  sleep(300);
+  
   return krun_start_enter (ctx_id);
 }
 #endif
 
 static int
-libcrun_configure_libkrun (struct container_entrypoint_s *args, libcrun_error_t *err,const char *attestation_url,const char *image_name)
+libcrun_configure_libkrun (struct container_entrypoint_s *args, libcrun_error_t *err)
 {
 #if HAVE_DLOPEN && HAVE_LIBKRUN
   void *handle;
@@ -1195,7 +1199,7 @@ libcrun_configure_wasm (struct container_entrypoint_s *args, libcrun_error_t *er
 }
 
 static int
-libcrun_configure_handler (struct container_entrypoint_s *args, libcrun_error_t *err)
+libcrun_configure_handler (struct container_entrypoint_s *args, int krun, libcrun_error_t *err)
 {
   const char *annotation;
   annotation = find_annotation (args->container, "run.oci.handler");
@@ -1216,14 +1220,14 @@ libcrun_configure_handler (struct container_entrypoint_s *args, libcrun_error_t 
     /* Check if crun is being invoked as krun via global_handler. */
 #if HAVE_DLOPEN && HAVE_LIBKRUN
   const char *image_name;
-  const char *attestation_url;
-  image_name = find_annotation (args->container, "krun/image");
-  attestation_url = find_annotation (args->container, "krun/attestation");
-  if (args->context->handler != NULL && (strcmp (args->context->handler, "krun") == 0))
+  //const char *attestation_url;
+  image_name = find_annotation (args->container, "io.kubernetes.cri-o.ImageName");
+  //attestation_url = find_annotation (args->container, "krun/attestation");
+  if (krun)
     {
-      args->container-> attestation_url = attestation_url;
+      //args->container-> attestation_url = attestation_url;
       args->container-> image = image_name;
-      return libcrun_configure_libkrun (args, err, attestation_url, image_name);
+      return libcrun_configure_libkrun (args, err);
     }
 #endif
 
@@ -1244,11 +1248,11 @@ libcrun_configure_handler (struct container_entrypoint_s *args, libcrun_error_t 
 
   if (strcmp (annotation, "krun") == 0)
     {
-      args->container-> attestation_url = attestation_url;
+      //args->container-> attestation_url = attestation_url;
       args->container-> image = image_name;
       /* set global_handler equivalent to "krun" so that we can mount kvm device */
       args->context->handler = annotation;
-      return libcrun_configure_libkrun (args, err, attestation_url, image_name);
+      return libcrun_configure_libkrun (args, err);
     }
 
   if (strcmp (annotation, "wasm") == 0)
@@ -1510,8 +1514,24 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
   runtime_spec_schema_config_schema_process_capabilities *capabilities;
   cleanup_free char *rootfs = NULL;
   int no_new_privs;
+  char test[4096];
+  int krun = 0;
+  
+  if (def->root && def->root->path)
+    {
+      snprintf(&test[0], 4096, "%s/disk.img", def->root->path);
+      if (access(&test[0], F_OK ) == 0)
+        {
+          printf("file exists\n");
+	  krun = 1;
+	}
+      else
+	{
+          printf("file %s doesn't exist\n", &test[0]);
+	}
+    }
 
-  ret = libcrun_configure_handler (args, err);
+  ret = libcrun_configure_handler (args, krun, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
@@ -1559,9 +1579,12 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
 
 #if HAVE_DLOPEN && HAVE_LIBKRUN
   /* explicitly configure kvm device if binary is invoked as krun */
-  if (entrypoint_args->context->handler != NULL && (strcmp (entrypoint_args->context->handler, "krun") == 0))
+  if (krun)
     {
       ret = libcrun_create_kvm_device (container, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+      ret = libcrun_create_sev_device (container, err);
       if (UNLIKELY (ret < 0))
         return ret;
     }
@@ -1734,9 +1757,11 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
 
   capabilities = def->process ? def->process->capabilities : NULL;
   no_new_privs = def->process ? def->process->no_new_privileges : 1;
+  /*
   ret = libcrun_set_caps (capabilities, container->container_uid, container->container_gid, no_new_privs, err);
   if (UNLIKELY (ret < 0))
     return ret;
+  */
 
   if (notify_socket)
     {
@@ -3768,12 +3793,14 @@ libcrun_container_exec_with_options (libcrun_context_t *context, const char *id,
       else if (container->container_def->process)
         capabilities = container->container_def->process->capabilities;
 
+      /*
       if (capabilities)
         {
           ret = libcrun_set_caps (capabilities, container_uid, container_gid, process->no_new_privileges, err);
           if (UNLIKELY (ret < 0))
             libcrun_fail_with_error ((*err)->status, "%s", (*err)->msg);
         }
+      */
 
       if (process->no_new_privileges)
         {

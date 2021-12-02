@@ -1992,6 +1992,48 @@ libcrun_create_kvm_device (libcrun_container_t *container, libcrun_error_t *err)
   return 0;
 }
 
+/* libcrun_create_sev_device: explicitly adds sev device.  */
+int
+libcrun_create_sev_device (libcrun_container_t *container, libcrun_error_t *err)
+{
+  int ret, rootfsfd;
+  size_t i;
+  struct device_s sev_device = { "/dev/sev", "c", 10, 61, 0666, 0, 0 };
+  cleanup_close int devfd = -1;
+  cleanup_close int rootfsfd_cleanup = -1;
+  runtime_spec_schema_config_schema *def = container->container_def;
+  const char *rootfs = get_private_data (container)->rootfs;
+  bool is_user_ns;
+
+  /* Do nothing if /dev/sev is already present in spec */
+  for (i = 0; i < def->linux->devices_len; i++)
+    {
+      if (strcmp (def->linux->devices[i]->path, "/dev/sev") == 0)
+        return 0;
+    }
+
+  if (rootfs == NULL)
+    rootfsfd = AT_FDCWD;
+  else
+    {
+      rootfsfd = rootfsfd_cleanup = open (rootfs, O_PATH);
+      if (UNLIKELY (rootfsfd < 0))
+        return crun_make_error (err, errno, "open `%s`", rootfs);
+    }
+  get_private_data (container)->rootfsfd = rootfsfd;
+  devfd = openat (rootfsfd, "dev", O_RDONLY | O_DIRECTORY);
+  if (UNLIKELY (devfd < 0))
+    return crun_make_error (err, errno, "open /dev directory in `%s`", rootfs);
+
+  is_user_ns = (get_private_data (container)->unshare_flags & CLONE_NEWUSER) ? true : false;
+
+  ret = create_dev (container, devfd, &sev_device, is_user_ns, true, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  return 0;
+}
+
 int
 libcrun_set_mounts (libcrun_container_t *container, const char *rootfs, set_mounts_cb_t cb, void *cb_data, libcrun_error_t *err)
 {
