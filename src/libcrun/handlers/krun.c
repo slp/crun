@@ -28,9 +28,14 @@
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/sysmacros.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/ioctl.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <ocispec/runtime_spec_schema_config_schema.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
 
 #ifdef HAVE_DLOPEN
 #  include <dlfcn.h>
@@ -65,6 +70,8 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
   int32_t (*krun_set_workdir) (uint32_t ctx_id, const char *workdir_path);
   int32_t (*krun_set_exec) (uint32_t ctx_id, const char *exec_path, char *const argv[], char *const envp[]);
   int32_t (*krun_set_tee_config_file) (uint32_t ctx_id, const char *file_path);
+  int32_t (*krun_set_tap_fd) (uint32_t ctx_id, int fd);
+  int32_t (*krun_add_vsock_port) (uint32_t ctx_id, uint32_t port, const char *file_path);
   struct krun_config *kconf = (struct krun_config *) cookie;
   void *handle;
   uint32_t num_vcpus, ram_mib;
@@ -90,12 +97,14 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
   krun_set_log_level = dlsym (handle, "krun_set_log_level");
   krun_create_ctx = dlsym (handle, "krun_create_ctx");
   krun_start_enter = dlsym (handle, "krun_start_enter");
+  krun_set_tap_fd = dlsym (handle, "krun_set_tap_fd");
+  krun_add_vsock_port = dlsym (handle, "krun_add_vsock_port");
   if (krun_set_log_level == NULL || krun_create_ctx == NULL
       || krun_start_enter == NULL)
     error (EXIT_FAILURE, 0, "could not find symbol in `libkrun.so`");
 
   /* Set log level to "error" */
-  krun_set_log_level (1);
+  krun_set_log_level (0);
 
   ctx_id = krun_create_ctx ();
   if (UNLIKELY (ctx_id < 0))
@@ -158,6 +167,62 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
       if (UNLIKELY (ret < 0))
         error (EXIT_FAILURE, -ret, "could not set krun executable");
     }
+
+  /*
+  struct sockaddr_un addr;
+  int socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, "/tmp/passt.socket", sizeof(addr.sun_path) - 1);
+
+  ret = connect(socket_fd, (const struct sockaddr *) &addr, sizeof(addr));
+  if (UNLIKELY (ret < 0)) {
+    error (EXIT_FAILURE, errno, "could not connect to passt socket");
+  } 
+
+  ret = krun_set_passt_fd(ctx_id, socket_fd);
+  if (UNLIKELY (ret < 0)) {
+    error (EXIT_FAILURE, -ret, "error in set_passt_fd");
+  }
+  */
+
+    struct ifreq ifr;
+    int fd, err;
+
+    fd = open("/dev/net/tun", O_RDWR);
+    if (fd < 0)
+        return fd;
+
+    memset(&ifr, 0, sizeof(ifr));
+
+    /* Flags: IFF_TUN   - TUN device (no Ethernet headers)
+     *        IFF_TAP   - TAP device
+     *
+     *        IFF_NO_PI - Do not provide packet information
+     */
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+    strncpy(ifr.ifr_name, "tap0", IFNAMSIZ);
+
+    err = ioctl(fd, TUNSETIFF, (void *) &ifr);
+    if (err < 0){
+        perror("Failed to create tap0 device");
+        return -1;
+    }
+
+        int len = 12;
+    err = ioctl(fd, TUNSETVNETHDRSZ, &len);
+    if (err != 0) {
+         perror("ioctl(TUNSETVNETHDRSZ)");
+         return -1;
+    }
+
+  ret = krun_set_tap_fd(ctx_id, fd);
+  if (UNLIKELY (ret < 0)) {
+    error (EXIT_FAILURE, -ret, "error in set_passt_fd");
+  }
+
+  krun_add_vsock_port(ctx_id, 4444, "/tmp/zone2.sock");
 
   return krun_start_enter (ctx_id);
 }
