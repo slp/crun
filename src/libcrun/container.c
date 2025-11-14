@@ -1353,9 +1353,9 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket,
         return ret;
     }
 
-  ret = mark_or_close_fds_ge_than (entrypoint_args->context->preserve_fds + 3, false, err);
-  if (UNLIKELY (ret < 0))
-    crun_error_write_warning_and_release (entrypoint_args->context->output_handler_arg, &err);
+  //ret = mark_or_close_fds_ge_than (entrypoint_args->context->preserve_fds + 3, false, err);
+  //if (UNLIKELY (ret < 0))
+  //  crun_error_write_warning_and_release (entrypoint_args->context->output_handler_arg, &err);
 
   if (rootfs)
     {
@@ -1651,9 +1651,9 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
          This is a best effort operation, because the seccomp filter is already in place and it could
          stop some syscalls used by mark_or_close_fds_ge_than.
       */
-      ret = mark_or_close_fds_ge_than (entrypoint_args->context->preserve_fds + 3, true, err);
-      if (UNLIKELY (ret < 0))
-        crun_error_release (err);
+      //ret = mark_or_close_fds_ge_than (entrypoint_args->context->preserve_fds + 3, true, err);
+      //if (UNLIKELY (ret < 0))
+      //  crun_error_release (err);
 
       prctl (PR_SET_NAME, entrypoint_args->custom_handler->vtable->name);
 
@@ -1690,9 +1690,9 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
   /* Attempt to close all the files that are not needed to prevent execv to have access to them.
      This is a best effort operation since the seccomp profile is already in place now and might block
      some of the syscalls needed by mark_or_close_fds_ge_than.  */
-  ret = mark_or_close_fds_ge_than (entrypoint_args->context->preserve_fds + 3, true, err);
-  if (UNLIKELY (ret < 0))
-    crun_error_release (err);
+  //ret = mark_or_close_fds_ge_than (entrypoint_args->context->preserve_fds + 3, true, err);
+  //if (UNLIKELY (ret < 0))
+  //  crun_error_release (err);
 
   TEMP_FAILURE_RETRY (execv (exec_path, def->process->args));
 
@@ -3692,9 +3692,9 @@ exec_process_entrypoint (libcrun_context_t *context,
         return ret;
     }
 
-  ret = mark_or_close_fds_ge_than (context->preserve_fds + 3, false, err);
-  if (UNLIKELY (ret < 0))
-    return ret;
+  //ret = mark_or_close_fds_ge_than (context->preserve_fds + 3, false, err);
+  //if (UNLIKELY (ret < 0))
+  //  return ret;
 
   if (! process->no_new_privileges)
     {
@@ -3802,9 +3802,9 @@ exec_process_entrypoint (libcrun_context_t *context,
      This is a best effort operation, because the seccomp filter is already in place and it could
      stop some syscalls used by mark_or_close_fds_ge_than.
   */
-  ret = mark_or_close_fds_ge_than (context->preserve_fds + 3, true, err);
-  if (UNLIKELY (ret < 0))
-    crun_error_release (err);
+  //ret = mark_or_close_fds_ge_than (context->preserve_fds + 3, true, err);
+  //if (UNLIKELY (ret < 0))
+  //  crun_error_release (err);
 
   TEMP_FAILURE_RETRY (execv (exec_path, process->args));
   libcrun_fail_with_error (errno, "exec");

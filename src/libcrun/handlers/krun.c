@@ -24,6 +24,7 @@
 #include "../linux.h"
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <errno.h>
 #include <sys/param.h>
 #include <sys/types.h>
@@ -61,6 +62,8 @@
 
 #define KRUN_FLAVOR_NITRO "aws-nitro"
 #define KRUN_FLAVOR_SEV "sev"
+
+static int socket_fds[2];
 
 struct krun_config
 {
@@ -350,6 +353,7 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
   int32_t (*krun_set_root) (uint32_t ctx_id, const char *root_path);
   int32_t (*krun_set_root_disk) (uint32_t ctx_id, const char *disk_path);
   int32_t (*krun_set_tee_config_file) (uint32_t ctx_id, const char *file_path);
+  int32_t (*krun_add_net_unixstream) (uint32_t ctx_id, const char *c_path, int fd, uint8_t *const c_mac, uint32_t features, uint32_t flags);
   struct krun_config *kconf = (struct krun_config *) cookie;
   void *handle;
   uint32_t num_vcpus, ram_mib;
@@ -450,6 +454,13 @@ libkrun_exec (void *cookie, libcrun_container_t *container, const char *pathname
       if (UNLIKELY (ret < 0))
         error (EXIT_FAILURE, -ret, "could not set krun vm configuration");
 
+      krun_add_net_unixstream = dlsym (handle, "krun_add_net_unixstream");
+
+      uint8_t mac[] = { 0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee };
+      ret = krun_add_net_unixstream (ctx_id, NULL, socket_fds[0], &mac[0], COMPAT_NET_FEATURES, 0);
+      if (UNLIKELY (ret < 0))
+        error (EXIT_FAILURE, -ret, "could not set krun net configuration");
+
       if (access ("/dev/dri", F_OK) == 0 && access ("/usr/libexec/virgl_render_server", F_OK) == 0)
         {
           ret = libkrun_enable_virtio_gpu (kconf);
@@ -494,6 +505,7 @@ libkrun_configure_container (void *cookie, enum handler_configure_phase phase,
   if (phase == HANDLER_CONFIGURE_BEFORE_MOUNTS)
     {
       cleanup_free char *origin_config_path = NULL;
+      cleanup_free char *passt_socket_path = NULL;
       cleanup_free char *state_dir = NULL;
       cleanup_free char *config = NULL;
       cleanup_close int fd = -1;
@@ -524,6 +536,64 @@ libkrun_configure_container (void *cookie, enum handler_configure_phase phase,
 
   if (phase != HANDLER_CONFIGURE_AFTER_MOUNTS)
     return 0;
+
+  pid_t pid;
+
+  socketpair (AF_UNIX, SOCK_STREAM, 0, socket_fds);
+  char fd_as_str[16];
+  snprintf (fd_as_str, sizeof (fd_as_str), "%d", socket_fds[1]);
+
+  char *const argv[] = {
+    (char *) "passt",
+    (char *) "-f",
+    (char *) "--fd",
+    (char *) fd_as_str,
+    NULL
+  };
+
+  int pipefd[2];
+  // Create the pipe before forking
+  if (pipe (pipefd) == -1)
+    {
+      perror ("ERROR: pipe creation failed");
+      return EXIT_FAILURE;
+    }
+
+  // 1. Fork a new process
+  pid = fork ();
+
+  if (pid < 0)
+    {
+      close (pipefd[0]);
+      close (pipefd[1]);
+      return EXIT_FAILURE;
+    }
+  else if (pid == 0)
+    {
+      // Child closes the read end of the pipe
+      close (pipefd[0]);
+
+      // Redirect standard output (file descriptor 1) to the write end of the pipe
+      if (dup2 (pipefd[1], STDERR_FILENO) == -1)
+        {
+          perror ("ERROR: dup2 failed");
+          exit (EXIT_FAILURE);
+        }
+
+      // Close the original write end descriptor (it's now duplicated to stdout)
+      close (pipefd[1]);
+      execvp ("passt", argv);
+      exit (EXIT_FAILURE);
+    }
+  else
+    {
+      char buffer[1];
+      ssize_t bytesRead;
+
+      close (pipefd[1]);
+      bytesRead = read (pipefd[0], buffer, 1);
+      close (pipefd[0]);
+    }
 
   /* Do nothing if /dev/kvm is already present in spec */
   for (i = 0; i < def->linux->devices_len; i++)
